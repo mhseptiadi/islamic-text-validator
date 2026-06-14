@@ -1,0 +1,23 @@
+# Build artifacts
+/bin/
+/dist/
+/tmp/
+build-errors.log
+*.exe
+
+# Generated data
+/data/raw/*
+!/data/raw/.gitkeep
+/data/generated/*
+!/data/generated/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+plan

@@ -1,0 +1,63 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: ${{ secrets.GCP_REGION }}
+  SERVICE_NAME: islamic-text-validator
+  IMAGE: gcr.io/${{ secrets.GCP_PROJECT_ID }}/islamic-text-validator
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download source JSON
+        run: |
+          mkdir -p data/raw
+          # TODO: replace with actual upstream JSON URLs
+          # curl -fsSL -o data/raw/quran.json "$QURAN_JSON_URL"
+          # curl -fsSL -o data/raw/hadith.json "$HADITH_JSON_URL"
+          echo "Add JSON download URLs before first deploy"
+
+      - name: Build database
+        run: go run ./cmd/seed -raw data/raw -out data/generated/data.db
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker --quiet
+
+      - name: Build and push image
+        run: |
+          docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "$SERVICE_NAME" \
+            --image "$IMAGE:${{ github.sha }}" \
+            --region "$REGION" \
+            --platform managed \
+            --allow-unauthenticated \
+            --set-env-vars DB_PATH=/app/data/generated/data.db
