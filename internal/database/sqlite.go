@@ -93,6 +93,29 @@ CREATE TRIGGER IF NOT EXISTS hadith_au AFTER UPDATE ON hadith BEGIN
 END;
 `
 
+const editionUniqueIndexes = `
+DROP INDEX IF EXISTS idx_quran_verse;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_quran_edition ON quran(chapter, verse, language, source);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_hadith_edition ON hadith(collection, hadith_number, language);
+`
+
+func dedupeEditions(db *sql.DB) error {
+	stmts := []string{
+		`DELETE FROM quran WHERE id NOT IN (
+			SELECT MIN(id) FROM quran GROUP BY chapter, verse, language, source
+		)`,
+		`DELETE FROM hadith WHERE id NOT IN (
+			SELECT MIN(id) FROM hadith GROUP BY collection, hadith_number, language
+		)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("dedupe editions: %w", err)
+		}
+	}
+	return nil
+}
+
 // Open connects to SQLite at dbPath, creating parent directories when needed.
 func Open(dbPath string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
@@ -107,6 +130,14 @@ func Open(dbPath string) (*sql.DB, error) {
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+	if err := dedupeEditions(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if _, err := db.Exec(editionUniqueIndexes); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("apply edition indexes: %w", err)
 	}
 
 	return db, nil

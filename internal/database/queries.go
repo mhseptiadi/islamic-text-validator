@@ -22,11 +22,14 @@ func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
 }
 
-// InsertQuran adds a single Quran verse.
+// InsertQuran adds or updates a single Quran verse keyed by chapter, verse, language, and source.
 func (s *Store) InsertQuran(ctx context.Context, entry models.Quran) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO quran (chapter, verse, text, normalized, language, source)
 		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(chapter, verse, language, source) DO UPDATE SET
+			text = excluded.text,
+			normalized = excluded.normalized
 	`, entry.Chapter, entry.Verse, entry.Text, entry.Normalized, entry.Language, entry.Source)
 	if err != nil {
 		return fmt.Errorf("insert quran: %w", err)
@@ -34,7 +37,7 @@ func (s *Store) InsertQuran(ctx context.Context, entry models.Quran) error {
 	return nil
 }
 
-// InsertHadith adds a single hadith translation row.
+// InsertHadith adds or updates a single hadith translation row keyed by collection, hadith number, and language.
 func (s *Store) InsertHadith(ctx context.Context, entry models.Hadith) error {
 	if len(entry.Translations) == 0 {
 		return fmt.Errorf("insert hadith: missing translation")
@@ -48,6 +51,12 @@ func (s *Store) InsertHadith(ctx context.Context, entry models.Hadith) error {
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO hadith (collection, hadith_number, book, hadith_in_book, text, normalized, language, grades)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(collection, hadith_number, language) DO UPDATE SET
+			book = excluded.book,
+			hadith_in_book = excluded.hadith_in_book,
+			text = excluded.text,
+			normalized = excluded.normalized,
+			grades = excluded.grades
 	`, entry.Collection, entry.HadithNumber, entry.Reference.Book, entry.Reference.Hadith,
 		t.Text, entry.Normalized, t.Language, string(grades))
 	if err != nil {
@@ -94,6 +103,8 @@ func (s *Store) SearchFTS(ctx context.Context, query string, source models.Sourc
 	if ftsQuery == "" {
 		return nil, nil
 	}
+
+	fmt.Println("ftsQuery", ftsQuery)
 
 	var hits []rankedHit
 
