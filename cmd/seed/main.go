@@ -45,6 +45,10 @@ func main() {
 		}
 	}
 
+	if err := store.RebuildFTS(ctx); err != nil {
+		log.Fatalf("rebuild fts index: %v", err)
+	}
+
 	log.Printf("seeded %d quran and %d hadith entries into %s", len(quranRows), len(hadithRows), *dbPath)
 }
 

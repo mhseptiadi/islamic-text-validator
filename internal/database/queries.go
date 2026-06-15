@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/mh/islamic-text-validator/internal/models"
 )
@@ -60,21 +62,42 @@ type rankedHit struct {
 	rank   float64
 }
 
+func (s *Store) RebuildFTS(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO quran_fts(quran_fts) VALUES('rebuild')`); err != nil {
+		return fmt.Errorf("rebuild quran fts: %w", err)
+	}
+	err := s.debugCountTable(ctx, "quran")
+	if err != nil {
+		return fmt.Errorf("debug quran: %w", err)
+	}
+	err = s.debugCountTable(ctx, "quran_fts")
+	if err != nil {
+		return fmt.Errorf("debug quran fts: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO hadith_fts(hadith_fts) VALUES('rebuild')`); err != nil {
+		return fmt.Errorf("rebuild hadith fts: %w", err)
+	}
+	// err = s.debugQuranFTS(ctx, "hadith_fts")
+	// if err != nil {
+	// 	return fmt.Errorf("debug hadith fts: %w", err)
+	// }
+	return nil
+}
+
 // SearchFTS performs BM25-ranked full-text search over Quran and/or Hadith text.
 func (s *Store) SearchFTS(ctx context.Context, query string, source models.SourceKind, limit int) ([]models.SearchHit, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 
-	terms := strings.Fields(strings.TrimSpace(query))
-	if len(terms) == 0 {
+	ftsQuery := buildFTSQuery(query)
+	if ftsQuery == "" {
 		return nil, nil
 	}
 
-	ftsQuery := strings.Join(terms, " ")
 	var hits []rankedHit
 
-	fmt.Println("ftsQuery", ftsQuery)
+	// TODO: join search and get by id into a single query
 
 	if source == "" || source == models.SourceQuran {
 		quranHits, err := s.searchQuranFTS(ctx, ftsQuery, limit)
@@ -90,8 +113,6 @@ func (s *Store) SearchFTS(ctx context.Context, query string, source models.Sourc
 		}
 		hits = append(hits, hadithHits...)
 	}
-
-	fmt.Println("hits", hits)
 
 	sort.Slice(hits, func(i, j int) bool { return hits[i].rank < hits[j].rank })
 	if len(hits) > limit {
@@ -119,7 +140,71 @@ func (s *Store) SearchFTS(ctx context.Context, query string, source models.Sourc
 	return results, nil
 }
 
+func StripPunctuation(text string) string {
+	reg := regexp.MustCompile(`[^\p{L}\p{N}\s]+`)
+	cleanText := reg.ReplaceAllString(text, " ")
+	return strings.Join(strings.Fields(cleanText), " ")
+}
+
+// buildFTSQuery turns free-form user text into a safe FTS5 MATCH expression.
+// Punctuation is stripped and each term is quoted so characters like "," are not
+// parsed as FTS5 operators (e.g. NEAR syntax).
+func buildFTSQuery(query string) string {
+	var b strings.Builder
+	b.Grow(len(query))
+	for _, r := range query {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsSpace(r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune(' ')
+		}
+	}
+
+	terms := strings.Fields(b.String())
+	if len(terms) == 0 {
+		return ""
+	}
+
+	quoted := make([]string, len(terms))
+	for i, term := range terms {
+		term = strings.ReplaceAll(term, `"`, `""`)
+		quoted[i] = `"` + term + `"`
+	}
+	return strings.Join(quoted, " ")
+}
+
+func (s *Store) debugCountTable(ctx context.Context, table string) error {
+	switch table {
+	case "quran_fts", "hadith_fts", "quran", "hadith":
+	default:
+		return fmt.Errorf("debug count: unknown table %q", table)
+	}
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf("SELECT count(*) FROM %s", table))
+	if err != nil {
+		return fmt.Errorf("debug %s fts: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var count int
+		err := rows.Scan(&count)
+		if err != nil {
+			return fmt.Errorf("scan %s fts count: %w", table, err)
+		}
+		fmt.Println("count", table, count)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate %s fts rows: %w", table, err)
+	}
+	return nil
+}
+
 func (s *Store) searchQuranFTS(ctx context.Context, ftsQuery string, limit int) ([]rankedHit, error) {
+
+	err := s.debugCountTable(ctx, "quran_fts")
+	if err != nil {
+		return nil, fmt.Errorf("debug quran fts: %w", err)
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT q.id, bm25(quran_fts) AS rank
 		FROM quran_fts

@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS quran (
 	source TEXT NOT NULL
 );
 
+-- External content: text lives in quran; triggers maintain the FTS index.
+-- SELECT count(*) FROM quran_fts reads quran, not index size — use MATCH or
+-- RebuildFTS() after bulk loads to verify or refresh the index.
 CREATE VIRTUAL TABLE IF NOT EXISTS quran_fts USING fts5(
 	text,
 	normalized,
