@@ -158,8 +158,8 @@ func StripPunctuation(text string) string {
 }
 
 // buildFTSQuery turns free-form user text into a safe FTS5 MATCH expression.
-// Punctuation is stripped and each term is quoted so characters like "," are not
-// parsed as FTS5 operators (e.g. NEAR syntax).
+// Punctuation is stripped, each term is quoted, and terms are combined with OR
+// so a match on any term is returned.
 func buildFTSQuery(query string) string {
 	var b strings.Builder
 	b.Grow(len(query))
@@ -181,7 +181,7 @@ func buildFTSQuery(query string) string {
 		term = strings.ReplaceAll(term, `"`, `""`)
 		quoted[i] = `"` + term + `"`
 	}
-	return strings.Join(quoted, " ")
+	return strings.Join(quoted, " OR ")
 }
 
 func (s *Store) debugCountTable(ctx context.Context, table string) error {
