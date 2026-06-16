@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 )
@@ -41,8 +42,8 @@ type RawHadithMetadata struct {
 
 // RawHadithItem is a single hadith in the raw JSON export.
 type RawHadithItem struct {
-	HadithNumber int                `json:"hadithnumber"`
-	ArabicNumber int                `json:"arabicnumber"`
+	HadithNumber float64            `json:"hadithnumber"`
+	ArabicNumber json.RawMessage    `json:"arabicnumber"`
 	Text         string             `json:"text"`
 	Grades       []RawHadithGrade   `json:"grades"`
 	Reference    RawHadithReference `json:"reference"`

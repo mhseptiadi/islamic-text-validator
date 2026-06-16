@@ -29,27 +29,16 @@ func main() {
 	store := database.NewStore(db)
 	ctx := context.Background()
 
-	quranRows, hadithRows, err := loadRawEntries(*rawDir)
+	quranCount, hadithCount, err := seedFromRaw(ctx, store, *rawDir)
 	if err != nil {
-		log.Fatalf("load raw entries: %v", err)
-	}
-
-	for _, entry := range quranRows {
-		if err := store.InsertQuran(ctx, entry); err != nil {
-			log.Fatalf("insert quran %d:%d: %v", entry.Chapter, entry.Verse, err)
-		}
-	}
-	for _, entry := range hadithRows {
-		if err := store.InsertHadith(ctx, entry); err != nil {
-			log.Fatalf("insert hadith %s:%d: %v", entry.Collection, entry.HadithNumber, err)
-		}
+		log.Fatalf("seed raw data: %v", err)
 	}
 
 	if err := store.RebuildFTS(ctx); err != nil {
 		log.Fatalf("rebuild fts index: %v", err)
 	}
 
-	log.Printf("seeded %d quran and %d hadith entries into %s", len(quranRows), len(hadithRows), *dbPath)
+	log.Printf("seeded %d quran and %d hadith entries into %s", quranCount, hadithCount, *dbPath)
 }
 
 type rawLoadResult struct {
@@ -57,19 +46,19 @@ type rawLoadResult struct {
 	hadith []models.Hadith
 }
 
-func loadRawEntries(rawDir string) ([]models.Quran, []models.Hadith, error) {
+func seedFromRaw(ctx context.Context, store *database.Store, rawDir string) (int, int, error) {
 	info, err := os.Stat(rawDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil, fmt.Errorf("raw directory %q does not exist; download JSON files first", rawDir)
+			return 0, 0, fmt.Errorf("raw directory %q does not exist; download JSON files first", rawDir)
 		}
-		return nil, nil, err
+		return 0, 0, err
 	}
 	if !info.IsDir() {
-		return nil, nil, fmt.Errorf("%q is not a directory", rawDir)
+		return 0, 0, fmt.Errorf("%q is not a directory", rawDir)
 	}
 
-	var result rawLoadResult
+	var quranCount, hadithCount int
 	err = filepath.WalkDir(rawDir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -87,15 +76,39 @@ func loadRawEntries(rawDir string) ([]models.Quran, []models.Hadith, error) {
 		if err != nil {
 			return err
 		}
-		result.quran = append(result.quran, parsed.quran...)
-		result.hadith = append(result.hadith, parsed.hadith...)
+
+		for _, entry := range parsed.quran {
+			if err := store.InsertQuran(ctx, entry); err != nil {
+				return fmt.Errorf("insert quran %d:%d from %s: %w", entry.Chapter, entry.Verse, path, err)
+			}
+		}
+		for _, entry := range parsed.hadith {
+			if err := store.InsertHadith(ctx, entry); err != nil {
+				return fmt.Errorf("insert hadith %s:%v from %s: %w", entry.Collection, entry.HadithNumber, path, err)
+			}
+		}
+
+		relPath, relErr := filepath.Rel(rawDir, path)
+		if relErr != nil {
+			relPath = path
+		}
+		language, source := models.EditionFromFilename(path)
+		switch {
+		case len(parsed.quran) > 0:
+			quranCount += len(parsed.quran)
+			log.Printf("ingested %s: quran, %d entries (language=%s, source=%s)", relPath, len(parsed.quran), language, source)
+		case len(parsed.hadith) > 0:
+			hadithCount += len(parsed.hadith)
+			log.Printf("ingested %s: hadith, %d entries (language=%s)", relPath, len(parsed.hadith), language)
+		}
+
 		return nil
 	})
 	if err != nil {
-		return nil, nil, err
+		return 0, 0, err
 	}
 
-	return result.quran, result.hadith, nil
+	return quranCount, hadithCount, nil
 }
 
 func parseJSONFile(path string, data []byte) (rawLoadResult, error) {

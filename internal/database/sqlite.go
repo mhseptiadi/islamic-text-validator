@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -55,7 +56,7 @@ END;
 CREATE TABLE IF NOT EXISTS hadith (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	collection TEXT NOT NULL,
-	hadith_number INTEGER NOT NULL,
+	hadith_number REAL NOT NULL,
 	book INTEGER NOT NULL,
 	hadith_in_book INTEGER NOT NULL,
 	text TEXT NOT NULL,
@@ -131,6 +132,10 @@ func Open(dbPath string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := migrateHadithNumberColumn(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate hadith_number column: %w", err)
+	}
 	if err := dedupeEditions(db); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -141,4 +146,64 @@ func Open(dbPath string) (*sql.DB, error) {
 	}
 
 	return db, nil
+}
+
+func migrateHadithNumberColumn(db *sql.DB) error {
+	var columnType string
+	err := db.QueryRow(`SELECT type FROM pragma_table_info('hadith') WHERE name = 'hadith_number'`).Scan(&columnType)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if strings.EqualFold(columnType, "REAL") {
+		return nil
+	}
+
+	stmts := []string{
+		`CREATE TABLE hadith_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			collection TEXT NOT NULL,
+			hadith_number REAL NOT NULL,
+			book INTEGER NOT NULL,
+			hadith_in_book INTEGER NOT NULL,
+			text TEXT NOT NULL,
+			normalized TEXT NOT NULL,
+			language TEXT NOT NULL,
+			grades TEXT NOT NULL DEFAULT '[]'
+		)`,
+		`INSERT INTO hadith_new SELECT * FROM hadith`,
+		`DROP TABLE hadith`,
+		`ALTER TABLE hadith_new RENAME TO hadith`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+
+	// DROP TABLE removes the old triggers; recreate them.
+	triggerStmts := []string{
+		`CREATE TRIGGER IF NOT EXISTS hadith_ai AFTER INSERT ON hadith BEGIN
+			INSERT INTO hadith_fts(rowid, text, normalized, collection, hadith_number, language)
+			VALUES (new.id, new.text, new.normalized, new.collection, new.hadith_number, new.language);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS hadith_ad AFTER DELETE ON hadith BEGIN
+			INSERT INTO hadith_fts(hadith_fts, rowid, text, normalized, collection, hadith_number, language)
+			VALUES ('delete', old.id, old.text, old.normalized, old.collection, old.hadith_number, old.language);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS hadith_au AFTER UPDATE ON hadith BEGIN
+			INSERT INTO hadith_fts(hadith_fts, rowid, text, normalized, collection, hadith_number, language)
+			VALUES ('delete', old.id, old.text, old.normalized, old.collection, old.hadith_number, old.language);
+			INSERT INTO hadith_fts(rowid, text, normalized, collection, hadith_number, language)
+			VALUES (new.id, new.text, new.normalized, new.collection, new.hadith_number, new.language);
+		END`,
+	}
+	for _, stmt := range triggerStmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -23,7 +23,7 @@ type HadithTranslation struct {
 type Hadith struct {
 	ID           int64               `json:"id,omitempty"`
 	Collection   string              `json:"collection"`
-	HadithNumber int                 `json:"hadith_number"`
+	HadithNumber float64             `json:"hadith_number"`
 	Reference    HadithReference     `json:"reference"`
 	Translations []HadithTranslation `json:"translations"`
 	Normalized   string              `json:"-"`
