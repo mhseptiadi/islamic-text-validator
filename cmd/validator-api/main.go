@@ -95,9 +95,21 @@ type replaceTaggedResponse struct {
 	Replacements []replaceTaggedReplacement `json:"replacements"`
 }
 
-// Go's regexp does not support backreferences, so we capture both tags
-// and verify they match in `parseTaggedBlock`.
-var taggedBlockRegex = regexp.MustCompile(`(?is)<(quran|hadith)>(.*?)</(quran|hadith)>`)
+// Tag parser for the standardized formats:
+// - <quran chapter="..." verse="...">...</quran>
+// - <hadith collection="..." number="...">...</hadith>
+//
+// Go's regexp does not support backreferences, so we capture both the opening
+// tag name and closing tag name and verify they match in `parseTaggedBlock`.
+var taggedBlockRegex = regexp.MustCompile(`(?is)<(quran|hadith)\b([^>]*)>(.*?)</(quran|hadith)>`)
+
+var (
+	quranChapterAttrRegex = regexp.MustCompile(`(?i)\bchapter\s*=\s*"(\d+)"`)
+	quranVerseAttrRegex   = regexp.MustCompile(`(?i)\bverse\s*=\s*"(\d+)"`)
+
+	hadithCollectionAttrRegex = regexp.MustCompile(`(?i)\bcollection\s*=\s*"([^"]*)"`)
+	hadithNumberAttrRegex     = regexp.MustCompile(`(?i)\bnumber\s*=\s*"(\d+)"`)
+)
 
 func replaceTaggedHandler(svc *validator.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -143,19 +155,27 @@ func replaceTaggedText(r *http.Request, svc *validator.Service, input string) (s
 	repls := make([]replaceTaggedReplacement, 0, 4)
 
 	out := taggedBlockRegex.ReplaceAllStringFunc(input, func(m string) string {
-		tag, content, ok := parseTaggedBlock(m)
+		tag, attrs, content, ok := parseTaggedBlock(m)
 		if !ok {
 			return m
 		}
 		switch tag {
 		case "quran":
-			newBlock, rep := replaceQuranBlock(r, svc, content)
+			chapter, verse, _ := parseQuranChapterVerse(attrs) // optional
+			newInner, rep := replaceQuranBlock(r, svc, chapter, verse, content)
 			repls = append(repls, rep)
-			return "<quran>" + newBlock + "</quran>"
+			if rep.Chapter > 0 && rep.Verse > 0 {
+				return "<quran chapter=\"" + strconv.Itoa(rep.Chapter) + "\" verse=\"" + strconv.Itoa(rep.Verse) + "\">" + newInner + "</quran>"
+			}
+			return "<quran>" + newInner + "</quran>"
 		case "hadith":
-			newBlock, rep := replaceHadithBlock(r, svc, content)
+			collection, hadithNumber, _ := parseHadithCollectionNumber(attrs) // optional
+			newInner, rep := replaceHadithBlock(r, svc, collection, hadithNumber, content)
 			repls = append(repls, rep)
-			return "<hadith>" + newBlock + "</hadith>"
+			if collection != "" && hadithNumber > 0 {
+				return "<hadith collection=\"" + sanitizeAttrValue(collection) + "\" number=\"" + strconv.Itoa(hadithNumber) + "\">" + newInner + "</hadith>"
+			}
+			return "<hadith>" + newInner + "</hadith>"
 		default:
 			return m
 		}
@@ -164,20 +184,54 @@ func replaceTaggedText(r *http.Request, svc *validator.Service, input string) (s
 	return out, repls
 }
 
-func parseTaggedBlock(m string) (tag string, content string, ok bool) {
+func parseTaggedBlock(m string) (tag string, attrs string, content string, ok bool) {
 	idx := taggedBlockRegex.FindStringSubmatchIndex(m)
 	// submatch indices: whole, openTag, content, closeTag
-	if len(idx) < 8 {
-		return "", "", false
+	// submatch indices: whole, openTagName, attrs, content, closeTagName
+	if len(idx) < 10 {
+		return "", "", "", false
 	}
 	openTag := strings.ToLower(m[idx[2]:idx[3]])
-	content = strings.TrimSpace(m[idx[4]:idx[5]])
-	closeTag := strings.ToLower(m[idx[6]:idx[7]])
+	attrs = m[idx[4]:idx[5]]
+	content = strings.TrimSpace(m[idx[6]:idx[7]])
+	closeTag := strings.ToLower(m[idx[8]:idx[9]])
 	if openTag != closeTag {
-		return "", "", false
+		return "", "", "", false
 	}
 	tag = openTag
-	return tag, content, true
+	return tag, strings.TrimSpace(attrs), content, true
+}
+
+func parseQuranChapterVerse(attrs string) (chapter, verse int, ok bool) {
+	ch := quranChapterAttrRegex.FindStringSubmatch(attrs)
+	vs := quranVerseAttrRegex.FindStringSubmatch(attrs)
+	if len(ch) != 2 || len(vs) != 2 {
+		return 0, 0, false
+	}
+	c, err1 := strconv.Atoi(ch[1])
+	v, err2 := strconv.Atoi(vs[1])
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return c, v, true
+}
+
+func parseHadithCollectionNumber(attrs string) (collection string, hadithNumber int, ok bool) {
+	coll := hadithCollectionAttrRegex.FindStringSubmatch(attrs)
+	num := hadithNumberAttrRegex.FindStringSubmatch(attrs)
+	if len(coll) != 2 || len(num) != 2 {
+		return "", 0, false
+	}
+	n, err := strconv.Atoi(num[1])
+	if err != nil {
+		return "", 0, false
+	}
+	return coll[1], n, true
+}
+
+func sanitizeAttrValue(v string) string {
+	// Keep output tag syntactically valid (no unescaped quotes).
+	return strings.ReplaceAll(v, `"`, `'`)
 }
 
 func sourceForTag(tag string) (models.SourceKind, bool) {
@@ -191,20 +245,32 @@ func sourceForTag(tag string) (models.SourceKind, bool) {
 	}
 }
 
-func replaceHadithBlock(r *http.Request, svc *validator.Service, content string) (string, replaceTaggedReplacement) {
-	content = strings.TrimSpace(content)
-	if content == "" {
-		return "", replaceTaggedReplacement{Tag: "hadith", Original: ""}
+func replaceHadithBlock(r *http.Request, svc *validator.Service, collection string, hadithNumber int, content string) (string, replaceTaggedReplacement) {
+	original := strings.TrimSpace(content)
+
+	// Prefer a constrained match only when both fields are provided.
+	// When ref exists in DB, always return the best edition (ignore score threshold).
+	if collection != "" && hadithNumber > 0 {
+		matchedText, score, ok := svc.MatchHadithByRef(r.Context(), original, collection, hadithNumber)
+		if ok {
+			return matchedText, replaceTaggedReplacement{
+				Tag:      "hadith",
+				Original: original,
+				Matched:  matchedText,
+				Score:    score,
+			}
+		}
 	}
 
-	matchedText, score, _, _, ok := bestMatchForContent(r, svc, models.SourceHadith, content)
-	if !ok {
-		return content, replaceTaggedReplacement{Tag: "hadith", Original: content}
+	// Fallback: best match by text only.
+	fallbackText, fallbackScore, _, _, ok2 := bestMatchForContent(r, svc, models.SourceHadith, original)
+	if !ok2 {
+		return original, replaceTaggedReplacement{Tag: "hadith", Original: original}
 	}
-	if score < 0.5 {
-		return "", replaceTaggedReplacement{Tag: "hadith", Original: content, Matched: "", Score: score}
+	if fallbackScore < 0.5 {
+		return "", replaceTaggedReplacement{Tag: "hadith", Original: original, Matched: "", Score: fallbackScore}
 	}
-	return matchedText, replaceTaggedReplacement{Tag: "hadith", Original: content, Matched: matchedText, Score: score}
+	return fallbackText, replaceTaggedReplacement{Tag: "hadith", Original: original, Matched: fallbackText, Score: fallbackScore}
 }
 
 type quranCitation struct {
@@ -234,61 +300,54 @@ func quranReplacement(original, matched string, score float64, chapter, verse in
 	}
 }
 
-func replaceQuranBlock(r *http.Request, svc *validator.Service, content string) (string, replaceTaggedReplacement) {
+var trailingParenBracketRegex = regexp.MustCompile(`(?is)\s*(\([^)]*\)|\[[^\]]*\])\s*$`)
+
+func splitTrailingParenBracketSegments(s string) (main string, tail string) {
+	s = strings.TrimSpace(s)
+	for {
+		loc := trailingParenBracketRegex.FindStringSubmatchIndex(s)
+		if loc == nil {
+			break
+		}
+		seg := strings.TrimSpace(s[loc[2]:loc[3]])
+		if tail == "" {
+			tail = seg
+		} else {
+			tail = seg + " " + tail
+		}
+		s = strings.TrimSpace(s[:loc[0]])
+	}
+	return strings.TrimSpace(s), strings.TrimSpace(tail)
+}
+
+func replaceQuranBlock(r *http.Request, svc *validator.Service, chapter, verse int, content string) (string, replaceTaggedReplacement) {
 	original := strings.TrimSpace(content)
-	if original == "" {
-		return "", quranReplacement("", "", 0, 0, 0)
-	}
+	mainText, _ := splitTrailingParenBracketSegments(original)
 
-	cit, ok := extractQuranCitation(original)
-	if !ok || !cit.HasNumbers {
-		// No chapter:verse found -> fallback to previous behavior (search by text only).
-		matchedText, score, chapter, verse, ok := bestMatchForContent(r, svc, models.SourceQuran, original)
-		if !ok {
-			return original, quranReplacement(original, "", 0, 0, 0)
+	// If chapter/verse are provided, prefer reference-constrained matching.
+	// When ref exists in DB, always return the best edition (ignore score threshold).
+	if chapter > 0 && verse > 0 {
+		matched, score, ok := svc.MatchQuranByRef(r.Context(), strings.TrimSpace(mainText), chapter, verse, "")
+		if ok {
+			newInner := strings.TrimSpace(matched.Text)
+			return newInner, quranReplacement(original, newInner, score, chapter, verse)
 		}
-		if score < 0.5 {
-			return "", quranReplacement(original, "", score, chapter, verse)
-		}
-		return matchedText, quranReplacement(original, matchedText, score, chapter, verse)
 	}
 
-	// Split into "verse text" and "citation" when possible.
-	before, after := splitAroundCitation(original, cit.Full)
-	verseText := strings.TrimSpace(before)
-	languageHint := validator.CitationLanguageHint(cit.Inner)
-
-	matched, score, ok := svc.MatchQuranByRef(r.Context(), verseText, cit.Chapter, cit.Verse, languageHint)
-	if ok {
-		chapter, verse := matched.Chapter, matched.Verse
-		if verseText != "" && score < 0.5 {
-			return "", quranReplacement(original, "", score, chapter, verse)
-		}
-
-		fixedCitation := fixCitationChapterName(cit, cit.Chapter)
-		out := strings.TrimSpace(matched.Text) + " " + fixedCitation + strings.TrimSpace(after)
-		return strings.TrimSpace(out), quranReplacement(original, strings.TrimSpace(matched.Text), score, chapter, verse)
+	// DB doesn't have that chapter:verse -> fallback by text only.
+	fallbackText := strings.TrimSpace(mainText)
+	if fallbackText == "" {
+		fallbackText = original
 	}
-
-	// Chapter:verse not in DB -> fallback search by tag content.
-	matchedText, score, chapter, verse, ok := bestMatchForContent(r, svc, models.SourceQuran, original)
-	if !ok {
-		return original, quranReplacement(original, "", 0, cit.Chapter, cit.Verse)
+	matchedText, fallbackScore, bestChapter, bestVerse, ok2 := bestMatchForContent(r, svc, models.SourceQuran, fallbackText)
+	if !ok2 {
+		return original, quranReplacement(original, original, 0, chapter, verse)
 	}
-	if score < 0.5 {
-		return "", quranReplacement(original, "", score, cit.Chapter, cit.Verse)
+	if fallbackScore < 0.5 {
+		return "", quranReplacement(original, "", fallbackScore, bestChapter, bestVerse)
 	}
-
-	// Also replace chapter:verse with the matched verse reference when available.
-	bestRef := extractChapterVerseFromMatch(matchedText, svc, r, original)
-	updated := matchedText
-	if bestRef.HasNumbers {
-		chapter, verse = bestRef.Chapter, bestRef.Verse
-		updated = replaceNumbersInCitation(original, cit, chapter, verse)
-	} else if chapter == 0 && verse == 0 {
-		chapter, verse = cit.Chapter, cit.Verse
-	}
-	return updated, quranReplacement(original, updated, score, chapter, verse)
+	newInner := strings.TrimSpace(matchedText)
+	return newInner, quranReplacement(original, newInner, fallbackScore, bestChapter, bestVerse)
 }
 
 func extractChapterVerseFromMatch(matchedText string, svc *validator.Service, r *http.Request, query string) quranCitation {

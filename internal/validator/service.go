@@ -47,14 +47,50 @@ func (s *Service) MatchQuranByRef(ctx context.Context, verseText string, chapter
 	}
 
 	matches := scoreSearchHits(verseText, candidates, 1)
-	if len(matches) == 0 {
+	if len(matches) == 0 || matches[0].Quran == nil {
 		return s.scoreQuranEditions(verseText, editions, citationLanguageHint)
 	}
 	best := matches[0]
-	if best.Quran == nil {
-		return nil, best.Score, false
-	}
 	return best.Quran, best.Score, true
+}
+
+// MatchHadithByRef finds the best hadith translation text for a (collection, hadithNumber).
+// If verseText is empty, it returns the first stored edition with score=1.
+func (s *Service) MatchHadithByRef(ctx context.Context, verseText string, collection string, hadithNumber int) (string, float64, bool) {
+	editions, err := s.store.GetHadithEditionsByRef(ctx, collection, hadithNumber)
+	if err != nil || len(editions) == 0 {
+		return "", 0, false
+	}
+
+	verseText = strings.TrimSpace(verseText)
+	if verseText == "" {
+		if len(editions[0].Translations) > 0 {
+			return strings.TrimSpace(editions[0].Translations[0].Text), 1, true
+		}
+		return "", 1, false
+	}
+
+	var bestText string
+	var bestScore float64
+	for i := range editions {
+		q := &editions[i]
+		if len(q.Translations) == 0 {
+			continue
+		}
+		cand := strings.TrimSpace(q.Translations[0].Text)
+		if cand == "" {
+			continue
+		}
+		score := Similarity(verseText, cand)
+		if bestText == "" || score > bestScore {
+			bestText = cand
+			bestScore = score
+		}
+	}
+	if bestText == "" {
+		return "", 0, false
+	}
+	return bestText, bestScore, true
 }
 
 func (s *Service) scoreQuranEditions(verseText string, editions []models.Quran, languageHint string) (*models.Quran, float64, bool) {

@@ -392,3 +392,44 @@ func (s *Store) getHadithByID(ctx context.Context, id int64) (*models.Hadith, er
 	}}
 	return &h, nil
 }
+
+// GetHadithEditionsByRef returns every stored edition for a (collection, hadithNumber) pair.
+func (s *Store) GetHadithEditionsByRef(ctx context.Context, collection string, hadithNumber int) ([]models.Hadith, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, collection, hadith_number, book, hadith_in_book, text, normalized, language, grades
+		FROM hadith
+		WHERE LOWER(collection) = LOWER(?) AND hadith_number = ?
+		ORDER BY language, id
+	`, collection, hadithNumber)
+	if err != nil {
+		return nil, fmt.Errorf("get hadith editions by ref: %w", err)
+	}
+	defer rows.Close()
+
+	var editions []models.Hadith
+	for rows.Next() {
+		var h models.Hadith
+		var book, hadithInBook int
+		var text, language, gradesJSON string
+		if err := rows.Scan(&h.ID, &h.Collection, &h.HadithNumber, &book, &hadithInBook,
+			&text, &h.Normalized, &language, &gradesJSON); err != nil {
+			return nil, fmt.Errorf("scan hadith edition: %w", err)
+		}
+
+		h.Reference = models.HadithReference{Book: book, Hadith: hadithInBook}
+		var grades []models.HadithGrade
+		if err := json.Unmarshal([]byte(gradesJSON), &grades); err != nil {
+			return nil, fmt.Errorf("unmarshal hadith grades: %w", err)
+		}
+		h.Translations = []models.HadithTranslation{{
+			Text:     text,
+			Language: language,
+			Grades:   grades,
+		}}
+		editions = append(editions, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate hadith editions: %w", err)
+	}
+	return editions, nil
+}
