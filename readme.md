@@ -8,15 +8,14 @@ When building an Islamic RAG (Retrieval-Augmented Generation) system, LLMs often
 
 - **Zero Database Latency:** Uses a read-only, embedded SQLite database. No external database connections, no network latency, and zero persistent hosting costs.
 - **BM25 Lexical Search:** Utilizes SQLite FTS5 to find exact keyword matches for LLM hallucinations, bypassing the "fuzzy" conceptual matches of vector databases.
-- **Mathematical Scoring:** Calculates Jaro-Winkler similarity on normalized text to return a strict correctness score for the generated text.
+- **Mathematical Scoring:** Calculates Levenshtein-based similarity on normalized text to return a strict correctness score for the generated text.
 - **Bilingual Support:** Maps both English and Indonesian translations alongside the original Uthmani Arabic text.
 - **Scale-to-Zero:** Designed for Google Cloud Run. The immutable data footprint allows for instant cold starts and infinite horizontal scaling.
 
 ## Architecture
 
 ```
-[ Incoming Request ] → [ Cloud Run Container ] → [ Local Go App Memory ] → [ Embedded SQLite FTS5 ]
-                                                                                  (No Network Latency)
+[ Incoming Request ] → [ Cloud Run Container ] → [ Local Go App Memory ] → [ Embedded SQLite FTS5 ] (No Network Latency)
 ```
 
 The system is split into two distinct parts:
@@ -51,7 +50,7 @@ Compared to a MongoDB + vector DB setup for validation, an embedded SQLite + pur
 
 | Component             | Choice                                   | Rationale                                                                                                   |
 | --------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| **String similarity** | `github.com/adrg/strutil` (Jaro-Winkler) | After FTS5 narrows candidates, exact mathematical string matching runs in microseconds with negligible RAM. |
+| **String similarity** | `github.com/agnivade/levenshtein` | After FTS5 narrows candidates, Levenshtein distance on normalized strings runs in microseconds with negligible RAM. |
 
 
 ### Infrastructure & Deployment
@@ -84,7 +83,7 @@ Compared to a MongoDB + vector DB setup for validation, an embedded SQLite + pur
 │   │   ├── json.go             # Structs for unmarshaling raw GitHub JSON
 │   │   └── entity.go           # Core structs (Quran, Hadith, API payloads)
 │   └── validator/
-│       ├── scoring.go          # Jaro-Winkler normalization and similarity
+│       ├── scoring.go          # Text normalization and Levenshtein similarity
 │       └── service.go          # Business logic combining search and scoring
 ├── data/
 │   ├── raw/                    # (gitignored) Temporary folder for downloaded JSON files
@@ -167,6 +166,119 @@ Validates LLM-generated text against the embedded corpus.
     }
   ]
 }
+```
+
+### `POST /replace-tagged`
+
+Finds `<quran>` and `<hadith>` tags in a block of text, validates the inner content against the embedded corpus, and returns the text with corrected tag bodies.
+
+Use this when your LLM wraps sacred quotes in structured tags and you want to auto-correct hallucinations in place.
+
+**Request body:**
+
+```json
+{
+  "text": "Allah said: <quran chapter=\"2\" verse=\"255\">wrong verse text here</quran>"
+}
+```
+
+
+| Field  | Type   | Required | Description                           |
+| ------ | ------ | -------- | ------------------------------------- |
+| `text` | string | yes      | Full text containing one or more tags |
+
+
+**Supported tag formats:**
+
+Quran (attributes are optional):
+
+```html
+<quran chapter="2" verse="255">verse text here</quran>
+<quran>verse text here</quran>
+```
+
+Hadith (attributes are optional):
+
+```html
+<hadith collection="bukhari" number="1">hadith text here</hadith>
+<hadith>hadith text here</hadith>
+```
+
+Hadith `collection` values are resolved to canonical DB names (e.g. `bukhari` → `Sahih al Bukhari`, `muslim` → `Sahih Muslim`).
+
+**How matching works:**
+
+- **No tag attributes** → search by the **inner text only** (full-text + similarity). The best canonical match replaces the entire tag body. If confidence is below 0.5, the tag body is cleared.
+- **With tag attributes** → **prioritize the attributes** over the inner text. The service looks up the referenced Quran verse (`chapter` + `verse`) or Hadith (`collection` + `number`) in the database and replaces the inner text with the best-matching edition for that reference. The similarity score is reported but does not block replacement when the reference exists in the database.
+
+**Replacement rules:**
+
+
+| Tag      | When reference attrs are present                                                                                    | When reference attrs are missing                    |
+| -------- | ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `quran`  | Lookup by `chapter` + `verse` from attributes; replace inner text with DB verse (score threshold ignored)           | Search by inner text only; empty tag if score < 0.5 |
+| `hadith` | Lookup by `collection` + `number` from attributes; replace inner text with DB translation (score threshold ignored) | Search by inner text only; empty tag if score < 0.5 |
+
+
+- The **entire inner content** of each tag is replaced with the matched canonical text.
+- With attributes present, inner citations (e.g. `(QS. 2:255)`) are **not** parsed — the tag attributes take priority.
+- Without attributes, only the inner text is used to find and replace the quote.
+
+**Response:**
+
+```json
+{
+    "text": "Allah said: <quran chapter=\"2\" verse=\"255\">wrong verse text here</quran>",
+    "replaced_text": "Allah said: <quran chapter=\"2\" verse=\"255\">Allah! There is no god but He— The Living,— The Self-Sufficient,— The Infinitely Enduring,— Slumber or sleep never reaches Him. All things are His, in the heavens and on the earth. Who is there who can plead in His presence except as He permits? He knows what (appears to His creatures), before or after or behind them. They shall not understand the smallest fragment of His knowledge except as He wills. His Throne extends over the heavens and over the earth, and He does not tire in guarding and preserving them; And He is the Most High (Al-A'li), the Supreme (Al-Azeem, in Glory). [This Holy Verse glorifying Allah is known as Ayat-ul-Kursi]</quran>",
+    "replacements": [
+        {
+            "tag": "quran",
+            "original": "wrong verse text here",
+            "matched": "Allah! There is no god but He— The Living,— The Self-Sufficient,— The Infinitely Enduring,— Slumber or sleep never reaches Him. All things are His, in the heavens and on the earth. Who is there who can plead in His presence except as He permits? He knows what (appears to His creatures), before or after or behind them. They shall not understand the smallest fragment of His knowledge except as He wills. His Throne extends over the heavens and over the earth, and He does not tire in guarding and preserving them; And He is the Most High (Al-A'li), the Supreme (Al-Azeem, in Glory). [This Holy Verse glorifying Allah is known as Ayat-ul-Kursi]",
+            "score": 0.032786885245901676,
+            "chapter": 2,
+            "verse": 255
+        }
+    ]
+}
+```
+
+
+| Field                     | Type   | Description                                    |
+| ------------------------- | ------ | ---------------------------------------------- |
+| `text`                    | string | Original input text                            |
+| `replaced_text`           | string | Input with corrected tag bodies                |
+| `replacements`            | array  | One entry per tag processed                    |
+| `replacements[].tag`      | string | `"quran"` or `"hadith"`                        |
+| `replacements[].original` | string | Inner content before replacement               |
+| `replacements[].matched`  | string | Corrected inner content (omitted when emptied) |
+| `replacements[].score`    | number | Similarity score of the chosen match           |
+| `replacements[].chapter`  | number | Quran chapter (when known)                     |
+| `replacements[].verse`    | number | Quran verse (when known)                       |
+
+
+**Example (Quran with reference):**
+
+```bash
+curl -s -X POST http://localhost:8080/replace-tagged \
+  -H "Content-Type: application/json" \
+  -d '{"text":"<quran chapter=\"2\" verse=\"2\">In the Name of Allah... (Surah al ikhlas. 1:1)</quran>"}'
+```
+
+**Example (Hadith with reference):**
+
+```bash
+curl -s -X POST http://localhost:8080/replace-tagged \
+  -H "Content-Type: application/json" \
+  -d '{"text":"<hadith collection=\"bukhari\" number=\"1\">incorrect hadith wording</hadith>"}'
+```
+
+**Example (text-only, no attributes):**
+
+```bash
+curl -s -X POST http://localhost:8080/replace-tagged \
+  -H "Content-Type: application/json" \
+  -d '{"text":"<quran>In the name of Allah, the Most Gracious, the Most Merciful</quran>"}'
 ```
 
 ## Local Development

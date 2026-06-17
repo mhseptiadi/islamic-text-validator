@@ -27,9 +27,11 @@ type MatchResult struct {
 
 // ValidateRequest is the API payload for text validation.
 type ValidateRequest struct {
-	Text   string     `json:"text"`
-	Source SourceKind `json:"source,omitempty"`
-	Limit  int        `json:"limit,omitempty"`
+	Text    string     `json:"text"`
+	Source  SourceKind `json:"source,omitempty"`
+	Limit   int        `json:"limit,omitempty"`
+	Chapter int        `json:"chapter,omitempty"`
+	Verse   int        `json:"verse,omitempty"`
 }
 
 // ValidateResponse wraps ranked matches for a validation query.

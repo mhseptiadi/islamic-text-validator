@@ -105,25 +105,9 @@ func (s *Store) SearchFTS(ctx context.Context, query string, source models.Sourc
 		return nil, nil
 	}
 
-	fmt.Println("ftsQuery", ftsQuery)
-
-	var hits []rankedHit
-
-	// TODO: join search and get by id into a single query
-
-	if source == "" || source == models.SourceQuran {
-		quranHits, err := s.searchQuranFTS(ctx, ftsQuery, limit)
-		if err != nil {
-			return nil, err
-		}
-		hits = append(hits, quranHits...)
-	}
-	if source == "" || source == models.SourceHadith {
-		hadithHits, err := s.searchHadithFTS(ctx, ftsQuery, limit)
-		if err != nil {
-			return nil, err
-		}
-		hits = append(hits, hadithHits...)
+	hits, err := s.collectFTSHits(ctx, ftsQuery, source, limit)
+	if err != nil {
+		return nil, err
 	}
 
 	sort.Slice(hits, func(i, j int) bool { return hits[i].rank < hits[j].rank })
@@ -150,6 +134,25 @@ func (s *Store) SearchFTS(ctx context.Context, query string, source models.Sourc
 	}
 
 	return results, nil
+}
+
+func (s *Store) collectFTSHits(ctx context.Context, ftsQuery string, source models.SourceKind, limit int) ([]rankedHit, error) {
+	hits := make([]rankedHit, 0, limit*2)
+	if source == "" || source == models.SourceQuran {
+		quranHits, err := s.searchQuranFTS(ctx, ftsQuery, limit)
+		if err != nil {
+			return nil, err
+		}
+		hits = append(hits, quranHits...)
+	}
+	if source == "" || source == models.SourceHadith {
+		hadithHits, err := s.searchHadithFTS(ctx, ftsQuery, limit)
+		if err != nil {
+			return nil, err
+		}
+		hits = append(hits, hadithHits...)
+	}
+	return hits, nil
 }
 
 func StripPunctuation(text string) string {
@@ -279,6 +282,91 @@ func (s *Store) getQuranByID(ctx context.Context, id int64) (*models.Quran, erro
 	return &q, nil
 }
 
+// GetQuranEditionsByRef returns every stored edition for a chapter:verse.
+func (s *Store) GetQuranEditionsByRef(ctx context.Context, chapter, verse int) ([]models.Quran, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, chapter, verse, text, normalized, language, source
+		FROM quran
+		WHERE chapter = ? AND verse = ?
+		ORDER BY language, source
+	`, chapter, verse)
+	if err != nil {
+		return nil, fmt.Errorf("get quran editions by ref: %w", err)
+	}
+	defer rows.Close()
+
+	var editions []models.Quran
+	for rows.Next() {
+		var q models.Quran
+		if err := rows.Scan(&q.ID, &q.Chapter, &q.Verse, &q.Text, &q.Normalized, &q.Language, &q.Source); err != nil {
+			return nil, fmt.Errorf("scan quran edition: %w", err)
+		}
+		editions = append(editions, q)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate quran editions: %w", err)
+	}
+	return editions, nil
+}
+
+// SearchQuranFTSByRef performs full-text search constrained to a chapter:verse.
+func (s *Store) SearchQuranFTSByRef(ctx context.Context, query string, chapter, verse, limit int) ([]models.SearchHit, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	ftsQuery := buildFTSQuery(query)
+	if ftsQuery == "" {
+		return s.quranSearchHitsByRef(ctx, chapter, verse)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT q.id, bm25(quran_fts) AS rank
+		FROM quran_fts
+		JOIN quran q ON q.id = quran_fts.rowid
+		WHERE quran_fts MATCH ?
+		  AND q.chapter = ?
+		  AND q.verse = ?
+		ORDER BY rank
+		LIMIT ?
+	`, ftsQuery, chapter, verse, limit)
+	if err != nil {
+		return nil, fmt.Errorf("quran fts search by ref: %w", err)
+	}
+	defer rows.Close()
+
+	hits, err := scanRankedHits(rows, models.SourceQuran)
+	if err != nil {
+		return nil, err
+	}
+	return s.rankedHitsToQuranSearchHits(ctx, hits)
+}
+
+func (s *Store) quranSearchHitsByRef(ctx context.Context, chapter, verse int) ([]models.SearchHit, error) {
+	editions, err := s.GetQuranEditionsByRef(ctx, chapter, verse)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]models.SearchHit, 0, len(editions))
+	for i := range editions {
+		q := editions[i]
+		results = append(results, models.SearchHit{Source: models.SourceQuran, Quran: &q})
+	}
+	return results, nil
+}
+
+func (s *Store) rankedHitsToQuranSearchHits(ctx context.Context, hits []rankedHit) ([]models.SearchHit, error) {
+	results := make([]models.SearchHit, 0, len(hits))
+	for _, hit := range hits {
+		quran, err := s.getQuranByID(ctx, hit.id)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, models.SearchHit{Source: models.SourceQuran, Quran: quran})
+	}
+	return results, nil
+}
+
 func (s *Store) getHadithByID(ctx context.Context, id int64) (*models.Hadith, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, collection, hadith_number, book, hadith_in_book, text, normalized, language, grades
@@ -304,4 +392,45 @@ func (s *Store) getHadithByID(ctx context.Context, id int64) (*models.Hadith, er
 		Grades:   grades,
 	}}
 	return &h, nil
+}
+
+// GetHadithEditionsByRef returns every stored edition for a (collection, hadithNumber) pair.
+func (s *Store) GetHadithEditionsByRef(ctx context.Context, collection string, hadithNumber int) ([]models.Hadith, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, collection, hadith_number, book, hadith_in_book, text, normalized, language, grades
+		FROM hadith
+		WHERE LOWER(collection) = LOWER(?) AND hadith_number = ?
+		ORDER BY language, id
+	`, collection, hadithNumber)
+	if err != nil {
+		return nil, fmt.Errorf("get hadith editions by ref: %w", err)
+	}
+	defer rows.Close()
+
+	var editions []models.Hadith
+	for rows.Next() {
+		var h models.Hadith
+		var book, hadithInBook int
+		var text, language, gradesJSON string
+		if err := rows.Scan(&h.ID, &h.Collection, &h.HadithNumber, &book, &hadithInBook,
+			&text, &h.Normalized, &language, &gradesJSON); err != nil {
+			return nil, fmt.Errorf("scan hadith edition: %w", err)
+		}
+
+		h.Reference = models.HadithReference{Book: book, Hadith: hadithInBook}
+		var grades []models.HadithGrade
+		if err := json.Unmarshal([]byte(gradesJSON), &grades); err != nil {
+			return nil, fmt.Errorf("unmarshal hadith grades: %w", err)
+		}
+		h.Translations = []models.HadithTranslation{{
+			Text:     text,
+			Language: language,
+			Grades:   grades,
+		}}
+		editions = append(editions, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate hadith editions: %w", err)
+	}
+	return editions, nil
 }

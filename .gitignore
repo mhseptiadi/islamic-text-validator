@@ -10,6 +10,7 @@ build-errors.log
 !/data/raw/.gitkeep
 /data/generated/*
 !/data/generated/.gitkeep
+**/data.db
 
 # IDE
 .idea/
@@ -19,5 +20,9 @@ build-errors.log
 # OS
 .DS_Store
 Thumbs.db
+
+# Test data
+**/*_test.go
+**/*.test.go
 
 plan
