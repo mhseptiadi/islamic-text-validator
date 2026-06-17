@@ -71,6 +71,7 @@ type rankedHit struct {
 	rank   float64
 }
 
+// RebuildFTS rebuilds the FTS5 indexes for Quran and Hadith.
 func (s *Store) RebuildFTS(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO quran_fts(quran_fts) VALUES('rebuild')`); err != nil {
 		return fmt.Errorf("rebuild quran fts: %w", err)
