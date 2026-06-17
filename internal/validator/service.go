@@ -57,6 +57,9 @@ func (s *Service) MatchQuranByRef(ctx context.Context, verseText string, chapter
 // MatchHadithByRef finds the best hadith translation text for a (collection, hadithNumber).
 // If verseText is empty, it returns the first stored edition with score=1.
 func (s *Service) MatchHadithByRef(ctx context.Context, verseText string, collection string, hadithNumber int) (string, float64, bool) {
+	if canonical, ok := ResolveHadithCollection(collection); ok {
+		collection = canonical
+	}
 	editions, err := s.store.GetHadithEditionsByRef(ctx, collection, hadithNumber)
 	if err != nil || len(editions) == 0 {
 		return "", 0, false

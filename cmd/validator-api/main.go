@@ -90,8 +90,8 @@ type replaceTaggedReplacement struct {
 }
 
 type replaceTaggedResponse struct {
-	Text         string                   `json:"text"`
-	ReplacedText string                   `json:"replaced_text"`
+	Text         string                     `json:"text"`
+	ReplacedText string                     `json:"replaced_text"`
 	Replacements []replaceTaggedReplacement `json:"replacements"`
 }
 

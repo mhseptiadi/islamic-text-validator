@@ -20,4 +20,8 @@ build-errors.log
 .DS_Store
 Thumbs.db
 
+# Test data
+**/*_test.go
+**/*.test.go
+
 plan
