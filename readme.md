@@ -8,15 +8,14 @@ When building an Islamic RAG (Retrieval-Augmented Generation) system, LLMs often
 
 - **Zero Database Latency:** Uses a read-only, embedded SQLite database. No external database connections, no network latency, and zero persistent hosting costs.
 - **BM25 Lexical Search:** Utilizes SQLite FTS5 to find exact keyword matches for LLM hallucinations, bypassing the "fuzzy" conceptual matches of vector databases.
-- **Mathematical Scoring:** Calculates Jaro-Winkler similarity on normalized text to return a strict correctness score for the generated text.
+- **Mathematical Scoring:** Calculates Levenshtein-based similarity on normalized text to return a strict correctness score for the generated text.
 - **Bilingual Support:** Maps both English and Indonesian translations alongside the original Uthmani Arabic text.
 - **Scale-to-Zero:** Designed for Google Cloud Run. The immutable data footprint allows for instant cold starts and infinite horizontal scaling.
 
 ## Architecture
 
 ```
-[ Incoming Request ] → [ Cloud Run Container ] → [ Local Go App Memory ] → [ Embedded SQLite FTS5 ]
-                                                                                  (No Network Latency)
+[ Incoming Request ] → [ Cloud Run Container ] → [ Local Go App Memory ] → [ Embedded SQLite FTS5 ] (No Network Latency)
 ```
 
 The system is split into two distinct parts:
@@ -51,7 +50,7 @@ Compared to a MongoDB + vector DB setup for validation, an embedded SQLite + pur
 
 | Component             | Choice                                   | Rationale                                                                                                   |
 | --------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| **String similarity** | `github.com/adrg/strutil` (Jaro-Winkler) | After FTS5 narrows candidates, exact mathematical string matching runs in microseconds with negligible RAM. |
+| **String similarity** | `github.com/agnivade/levenshtein` | After FTS5 narrows candidates, Levenshtein distance on normalized strings runs in microseconds with negligible RAM. |
 
 
 ### Infrastructure & Deployment
@@ -84,7 +83,7 @@ Compared to a MongoDB + vector DB setup for validation, an embedded SQLite + pur
 │   │   ├── json.go             # Structs for unmarshaling raw GitHub JSON
 │   │   └── entity.go           # Core structs (Quran, Hadith, API payloads)
 │   └── validator/
-│       ├── scoring.go          # Jaro-Winkler normalization and similarity
+│       ├── scoring.go          # Text normalization and Levenshtein similarity
 │       └── service.go          # Business logic combining search and scoring
 ├── data/
 │   ├── raw/                    # (gitignored) Temporary folder for downloaded JSON files
@@ -207,18 +206,23 @@ Hadith (attributes are optional):
 
 Hadith `collection` values are resolved to canonical DB names (e.g. `bukhari` → `Sahih al Bukhari`, `muslim` → `Sahih Muslim`).
 
+**How matching works:**
+
+- **No tag attributes** → search by the **inner text only** (full-text + similarity). The best canonical match replaces the entire tag body. If confidence is below 0.5, the tag body is cleared.
+- **With tag attributes** → **prioritize the attributes** over the inner text. The service looks up the referenced Quran verse (`chapter` + `verse`) or Hadith (`collection` + `number`) in the database and replaces the inner text with the best-matching edition for that reference. The similarity score is reported but does not block replacement when the reference exists in the database.
+
 **Replacement rules:**
 
 
-| Tag      | When reference attrs are present                                                            | When reference attrs are missing                    |
-| -------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| `quran`  | Lookup by `chapter` + `verse`, pick best-matching edition (score threshold ignored)         | Search by inner text only; empty tag if score < 0.5 |
-| `hadith` | Lookup by `collection` + `number`, pick best-matching translation (score threshold ignored) | Search by inner text only; empty tag if score < 0.5 |
+| Tag      | When reference attrs are present                                                                                    | When reference attrs are missing                    |
+| -------- | ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `quran`  | Lookup by `chapter` + `verse` from attributes; replace inner text with DB verse (score threshold ignored)           | Search by inner text only; empty tag if score < 0.5 |
+| `hadith` | Lookup by `collection` + `number` from attributes; replace inner text with DB translation (score threshold ignored) | Search by inner text only; empty tag if score < 0.5 |
 
 
 - The **entire inner content** of each tag is replaced with the matched canonical text.
-- When `chapter`/`verse` or `collection`/`number` are provided, inner citations (e.g. `(QS. 2:255)`) are not parsed — the tag attributes take priority.
-- Unrecognized or low-confidence text-only matches leave the tag body empty (`<quran></quran>`).
+- With attributes present, inner citations (e.g. `(QS. 2:255)`) are **not** parsed — the tag attributes take priority.
+- Without attributes, only the inner text is used to find and replace the quote.
 
 **Response:**
 
