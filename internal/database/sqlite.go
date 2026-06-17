@@ -148,6 +148,19 @@ func Open(dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
+func OpenReadOnly(dbPath string) (*sql.DB, error) {
+	dsn := "file:" + filepath.ToSlash(dbPath) + "?mode=ro"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite: %w", err)
+	}
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping sqlite: %w", err)
+	}
+	return db, nil
+}
+
 func migrateHadithNumberColumn(db *sql.DB) error {
 	var columnType string
 	err := db.QueryRow(`SELECT type FROM pragma_table_info('hadith') WHERE name = 'hadith_number'`).Scan(&columnType)

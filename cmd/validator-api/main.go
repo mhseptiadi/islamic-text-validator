@@ -16,7 +16,7 @@ func main() {
 	dbPath := envOrDefault("DB_PATH", "data/generated/data.db")
 	addr := envOrDefault("ADDR", ":8080")
 
-	db, err := database.Open(dbPath)
+	db, err := database.OpenReadOnly(dbPath)
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
