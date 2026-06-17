@@ -169,6 +169,114 @@ Validates LLM-generated text against the embedded corpus.
 }
 ```
 
+### `POST /replace-tagged`
+
+Finds `<quran>` and `<hadith>` tags in a block of text, validates the inner content against the embedded corpus, and returns the text with corrected tag bodies.
+
+Use this when your LLM wraps sacred quotes in structured tags and you want to auto-correct hallucinations in place.
+
+**Request body:**
+
+```json
+{
+  "text": "Allah said: <quran chapter=\"2\" verse=\"255\">wrong verse text here</quran>"
+}
+```
+
+
+| Field  | Type   | Required | Description                           |
+| ------ | ------ | -------- | ------------------------------------- |
+| `text` | string | yes      | Full text containing one or more tags |
+
+
+**Supported tag formats:**
+
+Quran (attributes are optional):
+
+```html
+<quran chapter="2" verse="255">verse text here</quran>
+<quran>verse text here</quran>
+```
+
+Hadith (attributes are optional):
+
+```html
+<hadith collection="bukhari" number="1">hadith text here</hadith>
+<hadith>hadith text here</hadith>
+```
+
+Hadith `collection` values are resolved to canonical DB names (e.g. `bukhari` → `Sahih al Bukhari`, `muslim` → `Sahih Muslim`).
+
+**Replacement rules:**
+
+
+| Tag      | When reference attrs are present                                                            | When reference attrs are missing                    |
+| -------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `quran`  | Lookup by `chapter` + `verse`, pick best-matching edition (score threshold ignored)         | Search by inner text only; empty tag if score < 0.5 |
+| `hadith` | Lookup by `collection` + `number`, pick best-matching translation (score threshold ignored) | Search by inner text only; empty tag if score < 0.5 |
+
+
+- The **entire inner content** of each tag is replaced with the matched canonical text.
+- When `chapter`/`verse` or `collection`/`number` are provided, inner citations (e.g. `(QS. 2:255)`) are not parsed — the tag attributes take priority.
+- Unrecognized or low-confidence text-only matches leave the tag body empty (`<quran></quran>`).
+
+**Response:**
+
+```json
+{
+    "text": "Allah said: <quran chapter=\"2\" verse=\"255\">wrong verse text here</quran>",
+    "replaced_text": "Allah said: <quran chapter=\"2\" verse=\"255\">Allah! There is no god but He— The Living,— The Self-Sufficient,— The Infinitely Enduring,— Slumber or sleep never reaches Him. All things are His, in the heavens and on the earth. Who is there who can plead in His presence except as He permits? He knows what (appears to His creatures), before or after or behind them. They shall not understand the smallest fragment of His knowledge except as He wills. His Throne extends over the heavens and over the earth, and He does not tire in guarding and preserving them; And He is the Most High (Al-A'li), the Supreme (Al-Azeem, in Glory). [This Holy Verse glorifying Allah is known as Ayat-ul-Kursi]</quran>",
+    "replacements": [
+        {
+            "tag": "quran",
+            "original": "wrong verse text here",
+            "matched": "Allah! There is no god but He— The Living,— The Self-Sufficient,— The Infinitely Enduring,— Slumber or sleep never reaches Him. All things are His, in the heavens and on the earth. Who is there who can plead in His presence except as He permits? He knows what (appears to His creatures), before or after or behind them. They shall not understand the smallest fragment of His knowledge except as He wills. His Throne extends over the heavens and over the earth, and He does not tire in guarding and preserving them; And He is the Most High (Al-A'li), the Supreme (Al-Azeem, in Glory). [This Holy Verse glorifying Allah is known as Ayat-ul-Kursi]",
+            "score": 0.032786885245901676,
+            "chapter": 2,
+            "verse": 255
+        }
+    ]
+}
+```
+
+
+| Field                     | Type   | Description                                    |
+| ------------------------- | ------ | ---------------------------------------------- |
+| `text`                    | string | Original input text                            |
+| `replaced_text`           | string | Input with corrected tag bodies                |
+| `replacements`            | array  | One entry per tag processed                    |
+| `replacements[].tag`      | string | `"quran"` or `"hadith"`                        |
+| `replacements[].original` | string | Inner content before replacement               |
+| `replacements[].matched`  | string | Corrected inner content (omitted when emptied) |
+| `replacements[].score`    | number | Similarity score of the chosen match           |
+| `replacements[].chapter`  | number | Quran chapter (when known)                     |
+| `replacements[].verse`    | number | Quran verse (when known)                       |
+
+
+**Example (Quran with reference):**
+
+```bash
+curl -s -X POST http://localhost:8080/replace-tagged \
+  -H "Content-Type: application/json" \
+  -d '{"text":"<quran chapter=\"2\" verse=\"2\">In the Name of Allah... (Surah al ikhlas. 1:1)</quran>"}'
+```
+
+**Example (Hadith with reference):**
+
+```bash
+curl -s -X POST http://localhost:8080/replace-tagged \
+  -H "Content-Type: application/json" \
+  -d '{"text":"<hadith collection=\"bukhari\" number=\"1\">incorrect hadith wording</hadith>"}'
+```
+
+**Example (text-only, no attributes):**
+
+```bash
+curl -s -X POST http://localhost:8080/replace-tagged \
+  -H "Content-Type: application/json" \
+  -d '{"text":"<quran>In the name of Allah, the Most Gracious, the Most Merciful</quran>"}'
+```
+
 ## Local Development
 
 ### Prerequisites
