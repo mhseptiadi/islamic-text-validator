@@ -98,9 +98,6 @@ type replaceTaggedResponse struct {
 // Tag parser for the standardized formats:
 // - <quran chapter="..." verse="...">...</quran>
 // - <hadith collection="..." number="...">...</hadith>
-//
-// Go's regexp does not support backreferences, so we capture both the opening
-// tag name and closing tag name and verify they match in `parseTaggedBlock`.
 var taggedBlockRegex = regexp.MustCompile(`(?is)<(quran|hadith)\b([^>]*)>(.*?)</(quran|hadith)>`)
 
 var (
