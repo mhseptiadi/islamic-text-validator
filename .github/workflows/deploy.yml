@@ -7,7 +7,6 @@ env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   REGION: ${{ secrets.GCP_REGION }}
   SERVICE_NAME: islamic-text-validator
-  # IMAGE: gcr.io/${{ secrets.GCP_PROJECT_ID }}/islamic-text-validator
   IMAGE: asia-southeast2-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/islamic-text-validator/api
   DATABASE_BUCKET: ${{ secrets.DATABASE_BUCKET }}
 
@@ -41,10 +40,6 @@ jobs:
           docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
           docker push "$IMAGE:${{ github.sha }}"
           docker push "$IMAGE:latest"
-
-      # - name: Docker build and config
-      #   run: |-
-      #     gcloud builds submit --tag $IMAGE:${{ github.sha }} .
 
       - name: Deploy to Cloud Run
         run: |
