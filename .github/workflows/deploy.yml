@@ -22,14 +22,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Echo environment variables
-        run: |
-          echo "PROJECT_ID: ${{ env.PROJECT_ID }}"
-          echo "REGION: ${{ env.REGION }}"
-          echo "SERVICE_NAME: ${{ env.SERVICE_NAME }}"
-          echo "IMAGE: ${{ env.IMAGE }}"
-          echo "DATABASE_BUCKET: ${{ env.DATABASE_BUCKET }}"
-
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
