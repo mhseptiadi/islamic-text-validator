@@ -1,8 +1,6 @@
 name: Deploy
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 env:
@@ -10,6 +8,7 @@ env:
   REGION: ${{ secrets.GCP_REGION }}
   SERVICE_NAME: islamic-text-validator
   IMAGE: gcr.io/${{ secrets.GCP_PROJECT_ID }}/islamic-text-validator
+  DATABASE_BUCKET: ${{ vars.DATABASE_BUCKET }}
 
 jobs:
   build-and-deploy:
@@ -22,27 +21,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - name: Download source JSON
+      - name: Echo environment variables
         run: |
-          mkdir -p data/raw
-          # TODO: replace with actual upstream JSON URLs
-          # curl -fsSL -o data/raw/quran.json "$QURAN_JSON_URL"
-          # curl -fsSL -o data/raw/hadith.json "$HADITH_JSON_URL"
-          echo "Add JSON download URLs before first deploy"
-
-      - name: Build database
-        run: go run ./cmd/seed -raw data/raw -out data/generated/data.db
+          echo "PROJECT_ID: ${{ env.PROJECT_ID }}"
+          echo "REGION: ${{ env.REGION }}"
+          echo "SERVICE_NAME: ${{ env.SERVICE_NAME }}"
+          echo "IMAGE: ${{ env.IMAGE }}"
+          echo "DATABASE_BUCKET: ${{ env.DATABASE_BUCKET }}"
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Download database
+        run: |
+          mkdir -p data/generated
+          gcloud storage cp ${{ env.DATABASE_BUCKET }}/data.db data/generated/data.db
 
       - name: Configure Docker for GCR
         run: gcloud auth configure-docker --quiet
