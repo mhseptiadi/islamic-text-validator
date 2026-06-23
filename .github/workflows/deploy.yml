@@ -33,19 +33,18 @@ jobs:
           mkdir -p data/generated
           gcloud storage cp ${{ env.DATABASE_BUCKET }}/data.db data/generated/data.db
 
-      # - name: Configure Docker for GCR
-      #   run: gcloud auth configure-docker --quiet
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker asia-southeast2-docker.pkg.dev --quiet
 
-      # - name: Build and push image
-      #   run: |
-      #     docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
-      #     docker push "$IMAGE:${{ github.sha }}"
-      #     docker push "$IMAGE:latest"
+      - name: Build and push image
+        run: |
+          docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
 
-      - name: Docker build and config
-        run: |-
-          gcloud builds submit --tag $IMAGE:${{ github.sha }} .
-
+      # - name: Docker build and config
+      #   run: |-
+      #     gcloud builds submit --tag $IMAGE:${{ github.sha }} .
 
       - name: Deploy to Cloud Run
         run: |
