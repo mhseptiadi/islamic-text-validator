@@ -5,9 +5,9 @@ on:
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  REGION: ${{ secrets.GCP_REGION }}
+  REGION: us-central1
   SERVICE_NAME: islamic-text-validator
-  IMAGE: asia-southeast2-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/islamic-text-validator/api
+  IMAGE: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/islamic-text-validator/api
   DATABASE_BUCKET: ${{ secrets.DATABASE_BUCKET }}
 
 jobs:
@@ -33,7 +33,7 @@ jobs:
           gcloud storage cp ${{ env.DATABASE_BUCKET }}/data.db data/generated/data.db
 
       - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker asia-southeast2-docker.pkg.dev --quiet
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
       - name: Build and push image
         run: |
